@@ -1,0 +1,22 @@
+{
+  "name": "claimso-scrapers",
+  "version": "1.0.0",
+  "description": "Lightweight Hono-based microservice for CLAIMSO scraping tasks",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "ts-node src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@sparticuz/chromium": "^119.0.0",
+    "hono": "^4.0.0",
+    "playwright-aws-lambda": "^0.10.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.1",
+    "typescript": "^5.3.0"
+  }
+}
