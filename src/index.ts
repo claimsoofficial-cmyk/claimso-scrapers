@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { bearerAuth } from 'hono/bearer-auth'
 import playwright from 'playwright-aws-lambda'
 import chromium from '@sparticuz/chromium'
-import { Browser, Page } from 'playwright-core'
+import type { Browser, Page } from 'playwright-core'
 
 const app = new Hono()
 
@@ -31,9 +31,9 @@ interface ScrapedProduct {
   name: string
   price: number
   purchase_date: string
-  image_url?: string
+  image_url?: string | undefined
   retailer: string
-  category?: string
+  category?: string | undefined
 }
 
 // Amazon-specific interfaces
@@ -48,17 +48,55 @@ interface AmazonOrder {
   purchase_location: string
 }
 
+// Raw product data from page extraction
+interface RawProductData {
+  external_id: string
+  name: string
+  price_text: string
+  purchase_date: string
+  image_url: string | null | undefined
+  retailer: string
+}
+
+// Raw Amazon order data from page extraction
+interface RawAmazonOrderData {
+  order_id: string
+  order_date: string
+  product_name: string
+  product_url: string
+  product_image: string
+  price_text: string
+  currency: string
+  purchase_location: string
+}
+
+// Selector configuration type
+interface RetailerSelectors {
+  loginEmail: string
+  loginPassword: string
+  loginSubmit: string
+  ordersPage: string
+  orderCards: string
+  productName: string
+  orderDate: string
+  productPrice: string
+  productImage: string
+  nextPage: string
+  captcha: string
+  twoFactor: string
+}
+
 // Error handling class
 class ScrapingError extends Error {
   type: 'CAPTCHA' | 'AUTH_FAILED' | 'PARSE_ERROR' | 'RATE_LIMIT' | 'TIMEOUT'
   recoverable: boolean
-  order_id?: string
+  order_id?: string | undefined
 
   constructor(
     type: 'CAPTCHA' | 'AUTH_FAILED' | 'PARSE_ERROR' | 'RATE_LIMIT' | 'TIMEOUT',
     message: string,
     recoverable: boolean,
-    order_id?: string
+    order_id?: string | undefined
   ) {
     super(message)
     this.name = 'ScrapingError'
@@ -119,9 +157,11 @@ function sanitizeString(input: string): string {
 function parseAmazonDate(dateStr: string): string {
   try {
     const date = new Date(dateStr)
-    return date.toISOString().split('T')[0] // Return YYYY-MM-DD format
+    const result = date.toISOString().split('T')[0]
+    return result || ''
   } catch {
-    return new Date().toISOString().split('T')[0] // Fallback to current date
+    const fallback = new Date().toISOString().split('T')[0]
+    return fallback || ''
   }
 }
 
@@ -195,12 +235,13 @@ async function handleCaptchaDetection(page: Page): Promise<void> {
 
 async function authenticateWithAmazon(page: Page, accessToken: string): Promise<void> {
   try {
-    const userAgent = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
-    await page.context().addInitScript(() => {
+    const userAgent = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)] || USER_AGENTS[0]
+    
+    await page.context().addInitScript((ua: string) => {
       Object.defineProperty(navigator, 'userAgent', {
-        get: () => userAgent,
+        get: () => ua,
       })
-    })
+    }, userAgent)
     
     await page.setViewportSize({ width: 1280, height: 720 })
     
@@ -212,10 +253,10 @@ async function authenticateWithAmazon(page: Page, accessToken: string): Promise<
       'DNT': '1',
       'Connection': 'keep-alive',
       'Upgrade-Insecure-Requests': '1',
-      'User-Agent': userAgent
+      'User-Agent': userAgent || ''
     })
     
-    await page.addInitScript((token) => {
+    await page.addInitScript((token: string) => {
       localStorage.setItem('amazon_access_token', token)
       sessionStorage.setItem('auth_state', 'authenticated')
       document.cookie = `amazon_auth_token=${token}; domain=.amazon.com; path=/`
@@ -262,22 +303,6 @@ async function authenticateWithAmazon(page: Page, accessToken: string): Promise<
   }
 }
 
-async function navigateToOrdersPage(page: Page): Promise<void> {
-  try {
-    await page.goto('https://www.amazon.com/gp/css/order-history', {
-      waitUntil: 'networkidle',
-      timeout: 30000
-    })
-    
-    await page.waitForSelector('[data-test-id="order-card"], .order-card, .order', {
-      timeout: 15000
-    })
-    
-  } catch {
-    throw new ScrapingError('TIMEOUT', 'Failed to load orders page', true)
-  }
-}
-
 async function extractOrdersWithPagination(
   page: Page,
   options: { max_pages: number }
@@ -291,14 +316,14 @@ async function extractOrdersWithPagination(
     try {
       console.log(`Scraping page ${currentPage}...`)
       
-      await page.waitForSelector(SELECTOR_FALLBACKS.orderCard[0], { timeout: 15000 })
+      await page.waitForSelector(SELECTOR_FALLBACKS.orderCard[0] || '.order-card', { timeout: 15000 })
       
-      const pageOrders = await page.$$eval(
-        SELECTOR_FALLBACKS.orderCard.join(', '),
-        (orderElements) => {
-          const orders: Record<string, unknown>[] = []
+      const pageOrders = await page.evaluate(
+        (fallbacks) => {
+          const orders: RawAmazonOrderData[] = []
+          const orderCards = document.querySelectorAll(fallbacks.orderCard.join(', '))
           
-          orderElements.forEach((card) => {
+          orderCards.forEach((card, cardIndex) => {
             try {
               const orderHeader = card.querySelector('.order-header') || card
               const orderDateEl = orderHeader.querySelector('.order-date, .order-info .a-color-secondary')
@@ -321,7 +346,7 @@ async function extractOrdersWithPagination(
                 
                 if (productName && orderDate) {
                   orders.push({
-                    order_id: orderNumber || `${Date.now()}-${index}`,
+                    order_id: orderNumber || `${Date.now()}-${cardIndex}-${index}`,
                     order_date: orderDate,
                     product_name: productName,
                     product_url: productUrl ? (productUrl.startsWith('http') ? productUrl : `https://amazon.com${productUrl}`) : '',
@@ -338,18 +363,19 @@ async function extractOrdersWithPagination(
           })
           
           return orders
-        }
+        },
+        SELECTOR_FALLBACKS
       )
       
       const processedOrders = pageOrders.map(order => ({
-        order_id: sanitizeString(order.order_id as string),
-        order_date: parseAmazonDate(order.order_date as string),
-        product_name: sanitizeString(order.product_name as string),
-        product_url: order.product_url as string,
-        product_image: order.product_image as string,
-        price: parsePrice(order.price_text as string),
-        currency: order.currency as string,
-        purchase_location: order.purchase_location as string
+        order_id: sanitizeString(order.order_id),
+        order_date: parseAmazonDate(order.order_date),
+        product_name: sanitizeString(order.product_name),
+        product_url: order.product_url || '',
+        product_image: order.product_image || '',
+        price: parsePrice(order.price_text),
+        currency: order.currency || 'USD',
+        purchase_location: order.purchase_location || 'Amazon'
       }))
       
       allOrders.push(...processedOrders)
@@ -475,7 +501,7 @@ async function scrapeAmazonWithOAuth(
       name: order.product_name,
       price: order.price,
       purchase_date: order.order_date,
-      image_url: order.product_image || undefined,
+      image_url: order.product_image ? order.product_image : undefined,
       retailer: 'amazon',
       category: extractBrandFromName(order.product_name)
     }))
@@ -489,7 +515,7 @@ async function scrapeAmazonWithOAuth(
 }
 
 // Walmart scraping selectors and configurations
-const WALMART_SELECTORS = {
+const WALMART_SELECTORS: RetailerSelectors = {
   loginEmail: '#sign-in-email',
   loginPassword: '#sign-in-password',
   loginSubmit: 'button[data-automation-id="signin-submit-btn"]',
@@ -505,7 +531,7 @@ const WALMART_SELECTORS = {
 }
 
 // Target scraping selectors
-const TARGET_SELECTORS = {
+const TARGET_SELECTORS: RetailerSelectors = {
   loginEmail: '#username',
   loginPassword: '#password',
   loginSubmit: '#login',
@@ -521,7 +547,7 @@ const TARGET_SELECTORS = {
 }
 
 // Best Buy scraping selectors  
-const BESTBUY_SELECTORS = {
+const BESTBUY_SELECTORS: RetailerSelectors = {
   loginEmail: '#fld-e',
   loginPassword: '#fld-p1',
   loginSubmit: 'button[type="submit"]',
@@ -539,16 +565,21 @@ const BESTBUY_SELECTORS = {
 // Generic retailer authentication function
 async function authenticateWithRetailer(
   page: Page, 
-  username: string, 
-  password: string, 
-  selectors: any,
+  username: string | undefined, 
+  password: string | undefined, 
+  selectors: RetailerSelectors,
   retailerName: string,
   loginUrl: string
 ): Promise<void> {
   try {
     // Set random user agent
-    const userAgent = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
-    await page.setUserAgent(userAgent)
+    const userAgent = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)] || USER_AGENTS[0]
+    await page.context().addInitScript((ua: string) => {
+      Object.defineProperty(navigator, 'userAgent', {
+        get: () => ua,
+      })
+    }, userAgent)
+    
     await page.setViewportSize({ width: 1280, height: 720 })
     
     // Navigate to login page
@@ -561,8 +592,8 @@ async function authenticateWithRetailer(
     
     // Fill login form
     await page.waitForSelector(selectors.loginEmail, { timeout: 15000 })
-    await page.fill(selectors.loginEmail, username)
-    await page.fill(selectors.loginPassword, password)
+    await page.fill(selectors.loginEmail, username ?? '')
+    await page.fill(selectors.loginPassword, password ?? '')
     
     // Submit login form
     await page.click(selectors.loginSubmit)
@@ -597,7 +628,7 @@ async function authenticateWithRetailer(
 // Generic order extraction function
 async function extractOrdersFromRetailer(
   page: Page,
-  selectors: any,
+  selectors: RetailerSelectors,
   retailerName: string,
   ordersUrl: string,
   maxPages: number = 5
@@ -614,10 +645,10 @@ async function extractOrdersFromRetailer(
       console.log(`Scraping ${retailerName} page ${currentPage}...`)
       
       // Extract orders from current page
-      const pageProducts = await page.$eval(
-        selectors.orderCards,
-        (orderElements, selectors, retailerName) => {
-          const products: any[] = []
+      const pageProducts = await page.evaluate(
+        (selectors: RetailerSelectors): RawProductData[] => {
+          const products: RawProductData[] = []
+          const orderElements = document.querySelectorAll(selectors.orderCards)
           
           orderElements.forEach((orderCard, index) => {
             try {
@@ -637,7 +668,7 @@ async function extractOrdersFromRetailer(
                   name: productName,
                   price_text: productPrice || '0',
                   purchase_date: orderDate,
-                  image_url: productImage,
+                  image_url: productImage || null,
                   retailer: retailerName
                 })
               }
@@ -648,12 +679,11 @@ async function extractOrdersFromRetailer(
           
           return products
         },
-        selectors,
-        retailerName
+        selectors
       )
       
       // Process the extracted data
-      const processedProducts = pageProducts.map(product => ({
+      const processedProducts: ScrapedProduct[] = pageProducts.map(product => ({
         external_id: product.external_id,
         name: sanitizeString(product.name),
         price: parsePrice(product.price_text),
@@ -688,7 +718,10 @@ async function extractOrdersFromRetailer(
 
 // Date parsing helper for different retailer formats
 function parseRetailerDate(dateStr: string): string {
-  if (!dateStr) return new Date().toISOString().split('T')[0]
+  if (!dateStr) {
+    const fallback = new Date().toISOString().split('T')[0]
+    return fallback || ''
+  }
   
   try {
     // Clean up the date string
@@ -697,14 +730,15 @@ function parseRetailerDate(dateStr: string): string {
     // Handle various date formats
     const date = new Date(cleaned)
     if (!isNaN(date.getTime())) {
-      return date.toISOString().split('T')[0]
+      const result = date.toISOString().split('T')[0]
+      return result || ''
     }
     
     // Try to parse relative dates like "2 days ago"
     if (cleaned.includes('day') || cleaned.includes('week') || cleaned.includes('month')) {
       const now = new Date()
       const match = cleaned.match(/(\d+)\s*(day|week|month)/)
-      if (match) {
+      if (match && match[1] && match[2]) {
         const amount = parseInt(match[1])
         const unit = match[2]
         
@@ -716,7 +750,8 @@ function parseRetailerDate(dateStr: string): string {
           now.setMonth(now.getMonth() - amount)
         }
         
-        return now.toISOString().split('T')[0]
+        const result = now.toISOString().split('T')[0]
+        return result || ''
       }
     }
     
@@ -725,11 +760,12 @@ function parseRetailerDate(dateStr: string): string {
   }
   
   // Fallback to current date
-  return new Date().toISOString().split('T')[0]
+  const fallback = new Date().toISOString().split('T')[0]
+  return fallback || ''
 }
 
 // Walmart scraping function - IMPLEMENTED
-async function importFromWalmart(username: string, password: string): Promise<ScrapedProduct[]> {
+async function importFromWalmart(username: string | undefined, password: string | undefined): Promise<ScrapedProduct[]> {
   let browser: Browser | null = null
   let page: Page | null = null
 
@@ -769,49 +805,8 @@ async function importFromWalmart(username: string, password: string): Promise<Sc
   }
 }
 
-// Target scraping function - IMPLEMENTED
-async function importFromTarget(username: string, password: string): Promise<ScrapedProduct[]> {
-  let browser: Browser | null = null
-  let page: Page | null = null
-
-  try {
-    browser = await launchSecureBrowser()
-    page = await browser.newPage()
-    
-    // Authenticate with Target
-    await authenticateWithRetailer(
-      page, 
-      username, 
-      password, 
-      TARGET_SELECTORS,
-      'Target',
-      'https://www.target.com/account/signin'
-    )
-    
-    // Extract orders
-    const products = await extractOrdersFromRetailer(
-      page,
-      TARGET_SELECTORS,
-      'Target',
-      'https://www.target.com/account/orders',
-      5
-    )
-    
-    return products
-    
-  } catch (error) {
-    console.error('Target scraping error:', error)
-    if (error instanceof ScrapingError) {
-      throw error
-    }
-    throw new ScrapingError('AUTH_FAILED', `Target scraping failed: ${(error as Error).message}`, false)
-  } finally {
-    await cleanupResources(browser, page)
-  }
-}
-
 // Best Buy scraping function - IMPLEMENTED  
-async function importFromBestBuy(username: string, password: string): Promise<ScrapedProduct[]> {
+async function importFromBestBuy(username: string | undefined, password: string | undefined): Promise<ScrapedProduct[]> {
   let browser: Browser | null = null
   let page: Page | null = null
 
@@ -846,6 +841,47 @@ async function importFromBestBuy(username: string, password: string): Promise<Sc
       throw error
     }
     throw new ScrapingError('AUTH_FAILED', `Best Buy scraping failed: ${(error as Error).message}`, false)
+  } finally {
+    await cleanupResources(browser, page)
+  }
+}
+
+// Target scraping function - IMPLEMENTED
+async function importFromTarget(username: string | undefined, password: string | undefined): Promise<ScrapedProduct[]> {
+  let browser: Browser | null = null
+  let page: Page | null = null
+
+  try {
+    browser = await launchSecureBrowser()
+    page = await browser.newPage()
+    
+    // Authenticate with Target
+    await authenticateWithRetailer(
+      page, 
+      username, 
+      password, 
+      TARGET_SELECTORS,
+      'Target',
+      'https://www.target.com/account/signin'
+    )
+    
+    // Extract orders
+    const products = await extractOrdersFromRetailer(
+      page,
+      TARGET_SELECTORS,
+      'Target',
+      'https://www.target.com/account/orders',
+      5
+    )
+    
+    return products
+    
+  } catch (error) {
+    console.error('Target scraping error:', error)
+    if (error instanceof ScrapingError) {
+      throw error
+    }
+    throw new ScrapingError('AUTH_FAILED', `Target scraping failed: ${(error as Error).message}`, false)
   } finally {
     await cleanupResources(browser, page)
   }

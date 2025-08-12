@@ -1,56 +1,50 @@
 {
-  // Visit https://aka.ms/tsconfig to read more about this file
   "compilerOptions": {
-    "target": "ES2020",
+    "target": "ES2022",
     "module": "ESNext",
-    "moduleResolution": "Node",
-    "outDir": "dist",
-    "rootDir": "src",
-    "strict": true,
-    "esModuleInterop": true,
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "allowJs": true,
     "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true
-  },
-  "include": ["src"]
-}
-    // File Layout
-    // "rootDir": "./src",
-    // "outDir": "./dist",
-
-    // Environment Settings
-    // See also https://aka.ms/tsconfig/module
-    "module": "nodenext",
-    "target": "esnext",
-    "types": [],
-    // For nodejs:
-    // "lib": ["esnext"],
-    // "types": ["node"],
-    // and npm install -D @types/node
-
-    // Other Outputs
-    "sourceMap": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
     "declaration": true,
     "declarationMap": true,
-
-    // Stricter Typechecking Options
-    "noUncheckedIndexedAccess": true,
+    "sourceMap": true,
+    "removeComments": false,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "exactOptionalPropertyTypes": true,
-
-    // Style Options
-    // "noImplicitReturns": true,
-    // "noImplicitOverride": true,
-    // "noUnusedLocals": true,
-    // "noUnusedParameters": true,
-    // "noFallthroughCasesInSwitch": true,
-    // "noPropertyAccessFromIndexSignature": true,
-
-    // Recommended Options
-    "strict": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "resolveJsonModule": true,
     "jsx": "react-jsx",
-    "verbatimModuleSyntax": true,
-    "isolatedModules": true,
-    "noUncheckedSideEffectImports": true,
-    "moduleDetection": "force",
-    "skipLibCheck": true,
-  }
+    "jsxImportSource": "hono/jsx",
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    },
+    "types": ["node"]
+  },
+  "include": [
+    "src/**/*",
+    "src/**/*.ts",
+    "src/**/*.tsx"
+  ],
+  "exclude": [
+    "node_modules",
+    ".vercel",
+    "dist",
+    "build",
+    "coverage",
+    "**/*.test.ts",
+    "**/*.spec.ts"
+  ]
 }
